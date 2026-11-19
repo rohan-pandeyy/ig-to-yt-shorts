@@ -31,10 +31,14 @@ License: MIT
 """
 
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
-CLIENT_SECRETS_FILE = "client_secrets.json"
-FFMPEG_FOLDER = os.path.join(os.path.dirname(__file__), 'ffmpeg_bin')
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CLIENT_SECRETS_FILE = os.path.join(SCRIPT_DIR, "client_secrets.json")
+TOKEN_FILE = os.path.join(SCRIPT_DIR, "token.pickle")
+FFMPEG_FOLDER = os.path.join(SCRIPT_DIR, 'ffmpeg_bin')
 FFMPEG_EXE = os.path.join(FFMPEG_FOLDER, 'ffmpeg.exe')
-TEMP_FOLDER = os.path.join(os.path.dirname(__file__), 'temp')
+TEMP_FOLDER = os.path.join(SCRIPT_DIR, 'temp')
+MAX_TITLE_LEN = 100       # YouTube API limit
+MAX_TAGS_TOTAL_LEN = 500  # YouTube API limit (combined length of all tags)
 
 
 def ensure_ffmpeg():
@@ -101,7 +105,7 @@ def download_reel(insta_url, ffmpeg_path=None):
 def get_authenticated_service():
     """Authenticate and return a YouTube API service object, reusing token if possible."""
     creds = None
-    token_path = "token.pickle"
+    token_path = TOKEN_FILE
     # Load existing credentials
     if os.path.exists(token_path):
         with open(token_path, "rb") as token:
@@ -111,6 +115,10 @@ def get_authenticated_service():
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(google.auth.transport.requests.Request())
         else:
+            if not os.path.exists(CLIENT_SECRETS_FILE):
+                sys.exit(f"Missing {CLIENT_SECRETS_FILE}.\n"
+                         "Download your OAuth 2.0 Desktop client JSON from Google Cloud Console "
+                         "and save it there (see README).")
             flow = google_auth_oauthlib.flow.InstalledAppFlow.from_client_secrets_file(
                 CLIENT_SECRETS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
@@ -119,17 +127,36 @@ def get_authenticated_service():
             pickle.dump(creds, token)
     return googleapiclient.discovery.build("youtube", "v3", credentials=creds)
 
-def initialize_upload(youtube, file, title, tags):
+def build_title(title):
+    """Make a YouTube-safe title ending in #Shorts (no angle brackets, <=100 chars)."""
+    suffix = ' #Shorts'
+    title = re.sub(r'[<>]', '', ' '.join(title.split()))
+    title = title[:MAX_TITLE_LEN - len(suffix)].rstrip()
+    return (title + suffix).strip()
+
+def limit_tags(tags):
+    """Drop tags once the combined length would exceed YouTube's limit."""
+    kept, total = [], 0
+    for tag in tags:
+        tag = re.sub(r'[<>]', '', tag)
+        cost = len(tag) + (2 if ' ' in tag else 0) + (1 if kept else 0)
+        if not tag or total + cost > MAX_TAGS_TOTAL_LEN:
+            continue
+        kept.append(tag)
+        total += cost
+    return kept
+
+def initialize_upload(youtube, file, title, tags, privacy='public'):
     """Upload the video file to YouTube Shorts with the given title and tags."""
     body = {
         'snippet': {
-            'title': title + ' #Shorts',
+            'title': build_title(title),
             'description': '#Shorts',
-            'tags': tags,
+            'tags': limit_tags(tags),
             'categoryId': '22',  # People & Blogs
         },
         'status': {
-            'privacyStatus': 'public',  # Make video public
+            'privacyStatus': privacy,
             'selfDeclaredMadeForKids': False,
         }
     }
@@ -150,6 +177,8 @@ def main():
     """Main entry point for the script."""
     parser = argparse.ArgumentParser(description="Upload Instagram Reel to YouTube Shorts")
     parser.add_argument('--url', help='Instagram Reel URL')
+    parser.add_argument('--privacy', choices=['public', 'unlisted', 'private'], default='public',
+                        help='YouTube privacy status (default: public)')
     args = parser.parse_args()
 
     insta_url = args.url or input("Enter Instagram Reel URL: ").strip()
@@ -181,7 +210,7 @@ def main():
     youtube = get_authenticated_service()
 
     print("\nUploading to YouTube Shorts...")
-    response = initialize_upload(youtube, video_file, title, tags)
+    response = initialize_upload(youtube, video_file, title, tags, args.privacy)
     video_id = response['id']
     print(f"\nVideo uploaded! YouTube URL: https://youtube.com/shorts/{video_id}")
     print(f"\nThe video file is saved at: {video_file}\nYou can clear the 'temp' folder manually when done.")

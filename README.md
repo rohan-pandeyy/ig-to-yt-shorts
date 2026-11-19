@@ -38,7 +38,9 @@ cd ig-to-yt-shorts
 2. **Install dependencies:**
 
 ```bash
-pip install yt-dlp google-auth-oauthlib google-api-python-client
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
 ---

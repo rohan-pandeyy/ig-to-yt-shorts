@@ -6,3 +6,4 @@ ffmpeg_bin/
 *.zip
 __pycache__/
 *.pyc
+.venv/
