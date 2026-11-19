@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#111318" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <title>Reel Queue</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Reel Queue</h1>
+    <form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form>
+  </header>
+
+  <main>
+    <div id="alert" class="alert" role="alert" hidden></div>
+
+    <section class="card" aria-labelledby="schedule-h">
+      <h2 id="schedule-h" class="visually-hidden">Schedule</h2>
+      <div class="schedule-row">
+        <div>
+          <div class="label">Next scheduled upload</div>
+          <div id="next-run" class="big">…</div>
+        </div>
+        <label class="interval">
+          <span class="label">Every</span>
+          <select id="interval"></select>
+        </label>
+      </div>
+      <div id="now-working" class="working" hidden></div>
+    </section>
+
+    <section class="card" aria-labelledby="add-h">
+      <h2 id="add-h" class="visually-hidden">Add reels</h2>
+      <form id="add-form">
+        <label for="urls" class="label">Add Instagram reel links (one per line)</label>
+        <textarea id="urls" rows="3" placeholder="https://www.instagram.com/reel/…" autocomplete="off" spellcheck="false"></textarea>
+        <button type="submit" class="primary">Add to queue</button>
+      </form>
+      <ul id="add-results" class="add-results"></ul>
+    </section>
+
+    <section aria-labelledby="queue-h">
+      <h2 id="queue-h">Queue <span id="queue-count" class="count"></span></h2>
+      <ul id="queue" class="reels"></ul>
+      <p id="queue-empty" class="empty" hidden>Nothing queued. Add a reel link above.</p>
+    </section>
+
+    <section id="attention-section" aria-labelledby="attention-h" hidden>
+      <h2 id="attention-h">Needs attention <span id="attention-count" class="count"></span></h2>
+      <ul id="attention" class="reels"></ul>
+    </section>
+
+    <section>
+      <details id="done-section">
+        <summary><h2>Uploaded <span id="done-count" class="count"></span></h2></summary>
+        <ul id="done" class="reels"></ul>
+      </details>
+    </section>
+  </main>
+
+  <dialog id="now-dialog">
+    <form id="now-form" method="dialog">
+      <h2>Upload now</h2>
+      <p id="now-reel" class="muted"></p>
+      <label for="now-title" class="label">YouTube title (optional)</label>
+      <input id="now-title" type="text" maxlength="100" autocomplete="off">
+      <p class="hint">Leave empty to use: <span id="now-auto-title"></span></p>
+      <div class="dialog-actions">
+        <button type="button" id="now-cancel">Cancel</button>
+        <button type="submit" class="primary">Upload now</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

@@ -167,6 +167,9 @@ class Worker:
         self._wake.set()
         if self._thread:
             self._thread.join(timeout)
+        if self._lock_file:
+            self._lock_file.close()   # releases the single-instance lock
+            self._lock_file = None
 
     def wake(self):
         """Call after Upload Now, adding reels or changing the interval, to skip the poll wait."""

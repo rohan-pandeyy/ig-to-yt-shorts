@@ -80,6 +80,28 @@ python ig_to_yt_shorts.py
 
 ---
 
+## 📱 Dashboard (queue + scheduled uploads)
+
+A small web dashboard you can open from your phone on the same Wi-Fi. Paste reel links into a
+queue; the PC uploads one reel per interval (default: every hour), oldest first. **Upload now**
+skips the wait for one reel, optionally with a custom title, without changing the schedule.
+
+```bash
+.venv/bin/python ig_to_yt_shorts.py --auth     # once: sign in to YouTube (browser opens)
+.venv/bin/python server.py --set-password      # once: dashboard password (8+ characters)
+.venv/bin/python server.py                     # prints the address to open on your phone
+```
+
+- Everything runs on this PC. Only the dashboard page is reachable on the network, behind the password.
+- The queue lives in `queue.db`. Reels that were interrupted mid-upload show as **Check channel**
+  instead of being retried, so nothing is uploaded twice.
+- If YouTube's daily quota runs out or the sign-in expires, the queue pauses and the dashboard
+  says why. For an expired sign-in, run the `--auth` command above again.
+- `worker.py` has a small CLI (`add`, `list`, `now`, `run`, …) for using the queue without the dashboard.
+- Tests: `.venv/bin/python -m unittest discover -s tests`
+
+---
+
 ## 📝 Notes
 
 - Downloaded videos are saved in the `temp` folder. You can clear this folder manually.
