@@ -35,6 +35,7 @@ UPLOAD_NOW_ALLOWED = (PENDING, FAILED)
 
 DEFAULT_SETTINGS = {
     'interval_minutes': '60',
+    'privacy': 'public',
 }
 
 SCHEMA = """
@@ -47,7 +48,7 @@ CREATE TABLE IF NOT EXISTS reels (
     caption               TEXT,          -- used as the YouTube description
     tags                  TEXT,          -- JSON list
     title_override        TEXT,          -- set via Upload Now
-    priority_requested_at TEXT,          -- set via Upload Now
+    priority_seq          INTEGER,       -- Upload Now order (NULL = not requested)
     video_path            TEXT,
     thumbnail_path        TEXT,
     youtube_id            TEXT,
@@ -108,6 +109,11 @@ def set_setting(key, value):
                      'ON CONFLICT(key) DO UPDATE SET value = excluded.value', (key, str(value)))
 
 
+def clear_setting(key):
+    with closing(connect()) as conn:
+        conn.execute('DELETE FROM settings WHERE key = ?', (key,))
+
+
 # ---------- queue: user actions ----------
 
 def add_reel(url):
@@ -139,9 +145,10 @@ def get_reel(reel_id):
         return _to_dict(conn.execute('SELECT * FROM reels WHERE id = ?', (reel_id,)).fetchone())
 
 
-def _transition(reel_id, allowed_from, action, sets):
-    """Apply `sets` only if the reel is currently in one of `allowed_from`."""
-    cols = ', '.join(f'{k} = ?' for k in sets)
+def _transition(reel_id, allowed_from, action, sets, raw_sets=None):
+    """Apply `sets` (values) and `raw_sets` (SQL expressions) only if the reel is
+    currently in one of `allowed_from`."""
+    cols = ', '.join([f'{k} = ?' for k in sets] + [f'{k} = {expr}' for k, expr in (raw_sets or {}).items()])
     marks = ', '.join('?' * len(allowed_from))
     with closing(connect()) as conn:
         row = conn.execute(
@@ -171,8 +178,8 @@ def request_upload_now(reel_id, title_override=None):
     """Move a pending/failed reel into the priority lane, with an optional custom title."""
     title_override = (title_override or '').strip() or None
     return _transition(reel_id, UPLOAD_NOW_ALLOWED, 'upload now', {
-        'status': PENDING, 'priority_requested_at': now(),
-        'title_override': title_override, 'error': None})
+        'status': PENDING, 'title_override': title_override, 'error': None},
+        raw_sets={'priority_seq': '(SELECT COALESCE(MAX(priority_seq), 0) + 1 FROM reels)'})
 
 
 def retry_reel(reel_id):
@@ -181,7 +188,7 @@ def retry_reel(reel_id):
     It leaves the priority lane but keeps any custom title (only Upload Now changes that).
     """
     return _transition(reel_id, (FAILED, NEEDS_REVIEW), 'retry', {
-        'status': PENDING, 'error': None, 'progress': None, 'priority_requested_at': None})
+        'status': PENDING, 'error': None, 'progress': None, 'priority_seq': None})
 
 
 def mark_done(reel_id):
@@ -198,8 +205,8 @@ def claim_next(priority_only):
     priority_only=False -> oldest pending reel (FIFO by insertion order).
     """
     if priority_only:
-        pick = ("SELECT id FROM reels WHERE status = 'pending' AND priority_requested_at IS NOT NULL "
-                "ORDER BY priority_requested_at, id LIMIT 1")
+        pick = ("SELECT id FROM reels WHERE status = 'pending' AND priority_seq IS NOT NULL "
+                "ORDER BY priority_seq LIMIT 1")
     else:
         pick = "SELECT id FROM reels WHERE status = 'pending' ORDER BY id LIMIT 1"
     with closing(connect()) as conn:

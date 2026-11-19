@@ -9,3 +9,4 @@ __pycache__/
 .venv/
 queue.db
 queue.db-*
+.worker.lock

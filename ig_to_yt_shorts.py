@@ -50,8 +50,34 @@ REEL_URL_RE = re.compile(
 )
 
 
+UPLOAD_RETRIES = 5        # bounded, exponential backoff inside googleapiclient (5xx/429/network)
+
+
 class AuthRequired(Exception):
     """No usable YouTube credentials and interactive sign-in is not allowed."""
+
+
+class UploadNotCreated(Exception):
+    """The upload failed and YouTube definitely did not create a video. Safe to retry."""
+
+    def __init__(self, message, status=None, reasons=()):
+        super().__init__(message)
+        self.status = status
+        self.reasons = tuple(reasons)
+
+
+class UploadOutcomeUnknown(Exception):
+    """The upload failed after data was sent; YouTube may or may not have the video.
+
+    Never retried automatically, because a retry could create a duplicate.
+    """
+
+
+def _http_error_reasons(err):
+    try:
+        return [e.get('reason', '') for e in err.error_details or []]
+    except Exception:
+        return []
 
 
 def parse_reel_url(url):
@@ -210,6 +236,11 @@ def initialize_upload(youtube, file, title, tags, privacy='public', caption='', 
 
     on_progress, if given, is called with a float 0..1 as chunks are sent;
     otherwise progress is printed.
+
+    Temporary errors are retried up to UPLOAD_RETRIES times by resuming the *same*
+    upload session, which can never create a second video. If it still fails:
+    - UploadNotCreated: YouTube rejected it (4xx) or the session never started.
+    - UploadOutcomeUnknown: anything else after the session started.
     """
     body = {
         'snippet': {
@@ -230,7 +261,18 @@ def initialize_upload(youtube, file, title, tags, privacy='public', caption='', 
     )
     response = None
     while response is None:
-        status, response = insert_request.next_chunk()
+        try:
+            status, response = insert_request.next_chunk(num_retries=UPLOAD_RETRIES)
+        except googleapiclient.errors.HttpError as e:
+            code = e.resp.status
+            if 400 <= code < 500 or insert_request.resumable_uri is None:
+                raise UploadNotCreated(f"YouTube rejected the upload (HTTP {code}): {e.reason}",
+                                       code, _http_error_reasons(e)) from e
+            raise UploadOutcomeUnknown(f"Upload failed after sending data (HTTP {code}): {e.reason}") from e
+        except Exception as e:
+            if insert_request.resumable_uri is None:
+                raise UploadNotCreated(f"Upload could not start: {e}") from e
+            raise UploadOutcomeUnknown(f"Upload failed after sending data: {e}") from e
         if status:
             if on_progress:
                 on_progress(status.progress())
