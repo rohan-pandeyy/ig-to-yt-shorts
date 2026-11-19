@@ -7,3 +7,5 @@ ffmpeg_bin/
 __pycache__/
 *.pyc
 .venv/
+queue.db
+queue.db-*
