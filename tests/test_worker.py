@@ -32,7 +32,8 @@ class FakePipeline:
         self.fetch_errors = []    # exceptions raised by successive fetch() calls
         self.upload_errors = []   # exceptions raised by successive upload() calls
         self.fetches = 0
-        self.uploads = []         # (url-ish video_path, title, privacy)
+        self.uploads = []         # (video file, title, privacy) for successful uploads
+        self.attempts = []        # (title, description) for every upload attempt
         self.auth_checks = 0
 
     def get_youtube(self):
@@ -51,10 +52,11 @@ class FakePipeline:
         code = yt.parse_reel_url(url)[0]
         path = os.path.join(self.tmpdir, f'{code}.mp4')
         open(path, 'w').close()
-        return {'shortcode': code, 'title': f'Video by {code}', 'caption': f'caption {code} #fun',
-                'tags': ['fun'], 'video_path': path, 'thumbnail_path': None}
+        return {'shortcode': code, 'caption': f'caption {code} #fun', 'handle': f'user{code.lower()}',
+                'full_name': None, 'tags': ['fun'], 'video_path': path, 'thumbnail_path': None}
 
-    def upload(self, youtube, video_path, title, tags, privacy, caption, on_progress):
+    def upload(self, youtube, video_path, title, description, tags, privacy, on_progress):
+        self.attempts.append((title, description))
         if self.upload_errors:
             raise self.upload_errors.pop(0)
         on_progress(0.5)
@@ -107,7 +109,12 @@ class WorkerTest(unittest.TestCase):
         r = store.get_reel(1)
         self.assertEqual((r['status'], r['youtube_id'], r['progress']), ('uploaded', 'vid1', 1.0))
         self.assertEqual(r['caption'], 'caption A #fun')
-        self.assertEqual(self.pipe.uploads[0][1:], ('Video by A', 'public'))
+        self.assertEqual(self.pipe.uploads[0][1:], ('caption A #fun', 'public'))
+        self.assertEqual(r['title'], 'caption A #fun')                # shown on the dashboard
+        self.assertEqual(r['uploader_handle'], 'usera')
+        self.assertEqual(self.pipe.attempts[0][1],
+                         'Originally posted by @usera on Instagram\n'
+                         'https://www.instagram.com/reel/A/\n\n#Shorts')
 
     def test_sleeping_through_intervals_uploads_only_one(self):
         self.add('A', 'B', 'C')
@@ -171,7 +178,7 @@ class WorkerTest(unittest.TestCase):
         (a,) = self.add('A')
         store.request_upload_now(a, '   ')
         self.w.run_once()
-        self.assertEqual(self.pipe.uploads[0][1], 'Video by A')
+        self.assertEqual(self.pipe.uploads[0][1], 'caption A #fun')
 
     def test_upload_now_requests_run_in_request_order(self):
         a, b = self.add('A', 'B')
@@ -213,8 +220,27 @@ class WorkerTest(unittest.TestCase):
             self.clock.t = T0 + i * HOUR
             self.w.run_once()
         self.assertEqual(self.pipe.uploads,
-                         [('A.mp4', 'Video by A', 'public'), ('B.mp4', 'Custom B', 'public'),
-                          ('C.mp4', 'Video by C', 'public')])
+                         [('A.mp4', 'caption A #fun', 'public'), ('B.mp4', 'Custom B', 'public'),
+                          ('C.mp4', 'caption C #fun', 'public')])
+
+    def test_retry_uploads_with_identical_title_and_description(self):
+        a, b = self.add('A', 'B')
+        store.request_upload_now(b, 'Custom B')
+        self.pipe.upload_errors = [yt.UploadNotCreated('server said no', 400),
+                                   yt.UploadNotCreated('server said no', 400)]
+        self.w.run_once()                                     # Upload Now B fails
+        self.clock.t = T0 + HOUR
+        self.w.run_once()                                     # scheduled A fails
+        store.retry_reel(a)
+        store.retry_reel(b)
+        for i in (2, 3):
+            self.clock.t = T0 + i * HOUR
+            self.w.run_once()
+        b1, a1, a2, b2 = self.pipe.attempts
+        self.assertEqual(a1, a2)
+        self.assertEqual(b1, b2)
+        self.assertEqual(b2[0], 'Custom B')
+        self.assertTrue(b2[1].startswith('caption B #fun\n\n'))   # full caption kept in description
 
     def test_rejected_upload_fails_without_duplicate_and_reuses_download(self):
         (a,) = self.add('A')

@@ -111,9 +111,9 @@ class Pipeline:
             self._ffmpeg_checked = True
         return yt.fetch_reel(url, self._ffmpeg_path, quiet=True)
 
-    def upload(self, youtube, video_path, title, tags, privacy, caption, on_progress):
-        response = yt.initialize_upload(youtube, video_path, title, yt.with_shorts_tag(tags),
-                                        privacy, caption, on_progress)
+    def upload(self, youtube, video_path, title, description, tags, privacy, on_progress):
+        response = yt.initialize_upload(youtube, video_path, title, description,
+                                        yt.with_shorts_tag(tags), privacy, on_progress)
         return response['id']
 
 
@@ -288,25 +288,34 @@ class Worker:
             return 'failed'
 
         # 2. Download, unless a previous attempt already did.
-        if reel.get('video_path') and os.path.exists(reel['video_path']):
-            meta = reel
-        else:
-            meta = self._fetch_with_retries(reel)
-            if meta is None:
+        if not (reel.get('video_path') and os.path.exists(reel['video_path'])):
+            fetched = self._fetch_with_retries(reel)
+            if fetched is None:
                 return 'failed'
-            store.update_reel(rid, status=store.DOWNLOADED, title=meta['title'],
-                              caption=meta['caption'], tags=meta['tags'],
-                              video_path=meta['video_path'], thumbnail_path=meta['thumbnail_path'])
+            auto_title, _ = yt.build_youtube_metadata(
+                fetched['caption'], fetched['handle'], fetched['full_name'], reel['url'])
+            store.update_reel(rid, status=store.DOWNLOADED, title=auto_title,
+                              caption=fetched['caption'], tags=fetched['tags'],
+                              uploader_handle=fetched['handle'], uploader_name=fetched['full_name'],
+                              video_path=fetched['video_path'], thumbnail_path=fetched['thumbnail_path'])
+            reel = store.get_reel(rid)
 
-        # 3. Upload. Once status is 'uploading', a crash means needs_review, never a retry.
-        title = (reel.get('title_override') or meta.get('title')
-                 or (meta.get('caption') or '').split('\n')[0] or 'Instagram Reel')
+        # 3. Title & description come only from stored data (caption, author, custom title),
+        #    so a retry always produces exactly the same title.
+        try:
+            title, description = yt.build_youtube_metadata(
+                reel.get('caption'), reel.get('uploader_handle'), reel.get('uploader_name'),
+                reel['url'], custom_title=reel.get('title_override'))
+        except ValueError as e:
+            store.update_reel(rid, status=store.FAILED, error=str(e))
+            return 'failed'
+
+        # 4. Upload. Once status is 'uploading', a crash means needs_review, never a retry.
         store.update_reel(rid, status=store.UPLOADING, progress=0.0)
         try:
             video_id = self.pipeline.upload(
-                youtube, meta['video_path'], title, meta.get('tags') or [],
-                store.get_setting('privacy'), meta.get('caption') or '',
-                lambda p: store.update_reel(rid, progress=p))
+                youtube, reel['video_path'], title, description, reel.get('tags') or [],
+                store.get_setting('privacy'), lambda p: store.update_reel(rid, progress=p))
         except yt.UploadNotCreated as e:
             if QUOTA_REASONS & set(e.reasons):
                 store.update_reel(rid, status=store.PENDING, progress=None)

@@ -24,14 +24,7 @@ class StoreAndPipelineTest(unittest.TestCase):
                     'https://www.instagram.com.evil.com/reel/x/', 'https://www.instagram.com/someuser/', '']:
             assert m.parse_reel_url(bad) is None, bad
 
-        # --- description / title
-        d = m.build_description('Nice <b>day</b> 🌞 #travel')
-        assert d == 'Nice bday/b 🌞 #travel\n\n#Shorts', repr(d)
-        assert m.build_description('already #Shorts') == 'already #Shorts'
-        big = m.build_description('🌞' * 3000)
-        assert len(big.encode()) <= 5000 and big.endswith('#Shorts')
-        assert m.build_description('') == '#Shorts'
-        assert len(m.build_title('x' * 300)) == 100
+        # (title/description rules are covered in test_titles.py)
 
         # --- store
         s.DB_PATH = os.path.join(tempfile.mkdtemp(), 'q.db')

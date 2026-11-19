@@ -23,7 +23,7 @@ import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
 
-from ig_to_yt_shorts import SCRIPT_DIR, parse_reel_url
+from ig_to_yt_shorts import SCRIPT_DIR, clean_custom_title, parse_reel_url
 
 DB_PATH = os.path.join(SCRIPT_DIR, 'queue.db')
 
@@ -44,8 +44,10 @@ CREATE TABLE IF NOT EXISTS reels (
     shortcode             TEXT NOT NULL UNIQUE,               -- duplicate guard
     url                   TEXT NOT NULL,                      -- canonical URL
     status                TEXT NOT NULL DEFAULT 'pending',
-    title                 TEXT,          -- extracted from Instagram
-    caption               TEXT,          -- used as the YouTube description
+    title                 TEXT,          -- automatic YouTube title (display only; recomputed at upload)
+    caption               TEXT,          -- full Instagram caption (source of title + description)
+    uploader_handle       TEXT,          -- @username, for attribution
+    uploader_name         TEXT,          -- display name, for attribution
     tags                  TEXT,          -- JSON list
     title_override        TEXT,          -- set via Upload Now
     priority_seq          INTEGER,       -- Upload Now order (NULL = not requested)
@@ -88,9 +90,17 @@ def _to_dict(row):
     return d
 
 
+# Columns added after the first release: (name, type). Added to existing databases on startup.
+MIGRATIONS = [('uploader_handle', 'TEXT'), ('uploader_name', 'TEXT')]
+
+
 def init_db():
     with closing(connect()) as conn:
         conn.executescript(SCHEMA)
+        existing = {row['name'] for row in conn.execute('PRAGMA table_info(reels)')}
+        for name, col_type in MIGRATIONS:
+            if name not in existing:
+                conn.execute(f'ALTER TABLE reels ADD COLUMN {name} {col_type}')
         for key, value in DEFAULT_SETTINGS.items():
             conn.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', (key, value))
 
@@ -175,8 +185,14 @@ def delete_reel(reel_id):
 
 
 def request_upload_now(reel_id, title_override=None):
-    """Move a pending/failed reel into the priority lane, with an optional custom title."""
-    title_override = (title_override or '').strip() or None
+    """Move a pending/failed reel into the priority lane, with an optional custom title.
+
+    A blank title clears any previous custom title (the automatic title is used).
+    """
+    try:
+        title_override = clean_custom_title(title_override or '') or None
+    except ValueError as e:
+        raise QueueError(str(e))
     return _transition(reel_id, UPLOAD_NOW_ALLOWED, 'upload now', {
         'status': PENDING, 'title_override': title_override, 'error': None},
         raw_sets={'priority_seq': '(SELECT COALESCE(MAX(priority_seq), 0) + 1 FROM reels)'})
