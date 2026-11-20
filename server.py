@@ -16,6 +16,10 @@ Security
 - State-changing requests must be JSON (or the login form) and come from this origin.
 - Only static/ and reel thumbnails (looked up by id, confined to temp/) are served;
   credentials, token, database and videos never are. Flask debug mode is never enabled.
+- The iPhone Shortcut uses POST /api/shortcut/add with its own API key (Bearer header,
+  only a hash stored; see shortcut_key.py). That key works on no other route, and the
+  dashboard session doesn't work on that route. Wrong keys lock the sender out like
+  wrong passwords, keyed on the real connection address (forwarded headers are ignored).
 """
 
 import argparse
@@ -25,6 +29,7 @@ import os
 import re
 import secrets
 import sys
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -35,6 +40,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from werkzeug.serving import make_server
 
 import ig_to_yt_shorts as yt
+import shortcut_key
 import startup
 import store
 import worker as worker_mod
@@ -46,6 +52,12 @@ MIN_PASSWORD_LEN = 8
 MAX_LOGIN_FAILURES = 5
 LOCKOUT_SECONDS = 300
 MAX_URLS_PER_ADD = 50
+MAX_KEY_FAILURES = 5
+ACTIVE_STATUSES = ('pending', 'downloading', 'downloaded', 'uploading')
+# An Instagram link anywhere in shared text (not part of a longer host name like evilinstagram.com).
+INSTAGRAM_LINK_RE = re.compile(r'(?<![\w.-])(?:https?://)?(?:www\.|m\.)?instagram\.com/[^\s<>"\']*',
+                               re.IGNORECASE)
+TRAILING_PUNCTUATION = '.,;:!?)]}>\'"»”’'
 # Fields the browser gets; file paths stay on the server.
 PUBLIC_FIELDS = ('id', 'shortcode', 'url', 'status', 'title', 'caption', 'title_override',
                  'priority_seq', 'youtube_id', 'progress', 'error', 'attempts',
@@ -68,6 +80,44 @@ def set_password(password):
     store.set_setting('secret_key', secrets.token_hex(32))   # logs out every existing session
 
 
+def find_reel_link(text):
+    """Find the first Instagram reel/post link in text shared by the iPhone.
+
+    Returns (canonical_url, None) or (None, reason). Only links that parse_reel_url
+    accepts are used, and only the canonical https://www.instagram.com/<kind>/<code>/
+    form is stored, so nothing else from the input is ever fetched.
+    """
+    candidates = []
+    for m in INSTAGRAM_LINK_RE.finditer(text):
+        link = m.group(0).rstrip(TRAILING_PUNCTUATION)
+        candidates.append(link if '://' in link else 'https://' + link)
+    # Short /share/ links hide the real reel id (parse_reel_url would read "share" as a
+    # username and the short code as the id), so they're never parsed as reels.
+    share_links = [c for c in candidates if urlparse(c).path.lower().startswith('/share/')]
+    for link in candidates:
+        if link in share_links:
+            continue
+        parsed = yt.parse_reel_url(link)
+        if parsed:
+            return parsed[1], None
+    if share_links:
+        return None, ("Instagram shared a short /share/ link, which isn't supported yet. "
+                      "Use the diagnostic Shortcut to see what it sends.")
+    if candidates:
+        return None, "That Instagram link isn't a reel or post."
+    return None, "No Instagram reel link found in what was shared."
+
+
+def _duplicate_message(status):
+    if status == 'uploaded':
+        return "Already uploaded to YouTube."
+    if status in ('failed', 'needs_review'):
+        return "Already in the queue (it needs attention on the dashboard)."
+    if status in ('downloading', 'downloaded', 'uploading'):
+        return "Already being uploaded right now."
+    return "Already in the queue."
+
+
 def create_app(the_worker):
     """the_worker needs .wake() and .current_reel_id (a real Worker, or a fake in tests)."""
     store.init_db()
@@ -85,11 +135,15 @@ def create_app(the_worker):
         MAX_CONTENT_LENGTH=64 * 1024,
     )
     login_failures = {}   # ip -> (count, locked_until)
+    key_failures = {}     # ip -> (count, locked_until), for the Shortcut key
+    key_failures_lock = threading.Lock()
 
     # ---------- request guards ----------
 
     @app.before_request
     def guard():
+        if request.endpoint == 'shortcut_add':
+            return None        # checks its own key, origin and body; sessions aren't accepted there
         if request.method not in ('GET', 'HEAD'):
             origin = request.headers.get('Origin')
             if origin and urlparse(origin).netloc != request.host:
@@ -229,7 +283,109 @@ def create_app(the_worker):
             the_worker.wake()
         return jsonify(schedule=worker_mod.status())
 
+    # ---------- iPhone Shortcut (API key, add only) ----------
+
+    def shortcut_reply(code, status, message, **extra):
+        return jsonify(ok=status == 'added', status=status, message=message, **extra), code
+
+    def key_failure(ip, reason):
+        with key_failures_lock:
+            count = key_failures.get(ip, (0, 0))[0] + 1
+            key_failures[ip] = (count, time.time() + LOCKOUT_SECONDS if count >= MAX_KEY_FAILURES else 0)
+        log.warning("Rejected Shortcut request from %s: %s (%d)", ip, reason, count)
+
+    @app.post('/api/shortcut/add', endpoint='shortcut_add')
+    def shortcut_add():
+        try:
+            return handle_shortcut_add()
+        except Exception:
+            log.exception("Shortcut request failed")      # traceback only; never headers or the key
+            return shortcut_reply(500, 'error', "Something went wrong on the PC. "
+                                                "Check its terminal for details.")
+
+    def handle_shortcut_add():
+        # request.remote_addr is the TCP peer: X-Forwarded-For and similar headers are never used.
+        ip = request.remote_addr
+        origin = request.headers.get('Origin')
+        if origin and urlparse(origin).netloc != request.host:
+            return shortcut_reply(403, 'forbidden', "Cross-origin request refused.")
+        with key_failures_lock:
+            locked_until = key_failures.get(ip, (0, 0))[1]
+        if locked_until > time.time():
+            return shortcut_reply(429, 'locked', "Too many wrong keys from this device. "
+                                                 "Try again in 5 minutes.")
+        if not shortcut_key.is_configured():
+            key_failure(ip, 'no key configured')
+            return shortcut_reply(401, 'not_configured', "No Shortcut key is set up on the PC. "
+                                                         "Run the start script with --new-shortcut-key.")
+        scheme, _, presented = request.headers.get('Authorization', '').partition(' ')
+        if scheme.lower() != 'bearer' or not presented.strip():
+            key_failure(ip, 'missing key')
+            return shortcut_reply(401, 'unauthorized', "No key sent. Check the Shortcut's "
+                                                       "Authorization header: Bearer <key>.")
+        if not shortcut_key.verify(presented.strip()):
+            key_failure(ip, 'wrong key')
+            return shortcut_reply(401, 'unauthorized', "Wrong key. Copy it into the Shortcut again, "
+                                                       "or make a new one with --new-shortcut-key.")
+        with key_failures_lock:
+            key_failures.pop(ip, None)
+
+        body = request.get_json(silent=True)
+        text = body.get('url') if isinstance(body, dict) else None
+        if not isinstance(text, str) or not text.strip():
+            return shortcut_reply(400, 'invalid', "Nothing was shared. Send JSON like "
+                                                  '{"url": "<reel link>"}.')
+        link, reason = find_reel_link(text)
+        if not link:
+            return shortcut_reply(400, 'invalid', reason)
+        try:
+            reel = store.add_reel(link)      # same as the dashboard: end of the queue, no wake-up
+        except store.DuplicateReel as e:
+            return shortcut_reply(200, 'duplicate', _duplicate_message(e.status), url=link)
+        ahead = sum(1 for r in store.list_reels()
+                    if r['status'] in ACTIVE_STATUSES and r['id'] != reel['id'])
+        log.info("Shortcut added reel %s", reel['shortcode'])
+        return shortcut_reply(201, 'added', f"Added to Reel Queue (#{ahead + 1} in line).",
+                              url=reel['url'], shortcode=reel['shortcode'], position=ahead + 1)
+
     return app
+
+
+def new_shortcut_key(port, out=None):
+    """Create (or replace) the Shortcut key and print it once. Refuses unless printing to a
+    terminal, so the key never ends up in a log file or pipe. Returns an exit code."""
+    out = out or sys.stdout
+    if not (hasattr(out, 'isatty') and out.isatty()):
+        print("Run this in a terminal window: the key is only shown on screen, "
+              "never written to files or pipes.", file=sys.stderr)
+        return 1
+    replaced = shortcut_key.is_configured()
+    key = shortcut_key.create()
+    _, network, _, _ = startup.dashboard_urls('0.0.0.0', port)
+    mode = startup.qr_mode(out)
+    lines = ["", "New iPhone Shortcut key (shown only this once):", "", f"    {key}", ""]
+    if replaced:
+        lines += ["The previous key stopped working. Update the Shortcut with this one.", ""]
+    if mode != 'none':
+        lines += ["This QR code contains only the key. Scan it with the iPhone camera to copy it:",
+                  "", startup.render_qr(key, mode), ""]
+    lines += ["In the Shortcut, set the header:",
+              "    Authorization    Bearer " + key,
+              "and the URL:",
+              f"    {(network or 'http://<this PC address>:' + str(port))}/api/shortcut/add",
+              "",
+              "Clear this terminal afterwards (Linux: clear, Windows: cls).",
+              "Turn the Shortcut off with --revoke-shortcut-key.", ""]
+    print('\n'.join(lines), file=out, flush=True)
+    return 0
+
+
+def revoke_shortcut_key():
+    if shortcut_key.revoke():
+        print("Shortcut key revoked. The iPhone Shortcut can no longer add reels.")
+    else:
+        print("There was no Shortcut key to revoke.")
+    return 0
 
 
 def prompt_new_password():
@@ -303,11 +459,21 @@ def main():
                    help='Address to listen on (default: all, so phones on the LAN can connect)')
     p.add_argument('--port', type=int, default=DEFAULT_PORT)
     p.add_argument('--set-password', action='store_true', help='Set the dashboard password and exit')
+    keys = p.add_mutually_exclusive_group()
+    keys.add_argument('--new-shortcut-key', action='store_true',
+                      help='Create or replace the iPhone Shortcut key, show it once and exit')
+    keys.add_argument('--revoke-shortcut-key', action='store_true',
+                      help='Turn off the iPhone Shortcut key and exit')
     args = p.parse_args()
     try:
         sys.stdout.reconfigure(line_buffering=True)   # keep messages in order when piped/logged
     except (AttributeError, ValueError):
         pass
+
+    if args.new_shortcut_key:
+        sys.exit(new_shortcut_key(args.port))
+    if args.revoke_shortcut_key:
+        sys.exit(revoke_shortcut_key())
 
     if args.set_password:
         store.init_db()

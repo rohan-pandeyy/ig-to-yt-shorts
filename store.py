@@ -71,6 +71,14 @@ class QueueError(Exception):
     """A user-facing problem with a queue operation (bad URL, duplicate, wrong state)."""
 
 
+class DuplicateReel(QueueError):
+    """The reel is already in the database; .status is its current status."""
+
+    def __init__(self, message, status):
+        super().__init__(message)
+        self.status = status
+
+
 def now():
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
@@ -141,7 +149,8 @@ def add_reel(url):
         except sqlite3.IntegrityError:
             existing = conn.execute('SELECT status FROM reels WHERE shortcode = ?',
                                     (shortcode,)).fetchone()
-            raise QueueError(f"Already in the queue ({existing['status']}): {canonical}")
+            raise DuplicateReel(f"Already in the queue ({existing['status']}): {canonical}",
+                                existing['status'])
         return _to_dict(conn.execute('SELECT * FROM reels WHERE id = ?', (cur.lastrowid,)).fetchone())
 
 

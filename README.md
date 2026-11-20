@@ -15,6 +15,7 @@ Shorts, one at a time on a schedule you choose. Everything runs on your own comp
 - 🛡️ Never uploads the same reel twice; failed reels stay visible with a Retry button
 - 🔒 Password-protected dashboard; Google sign-in and all files stay on your PC
 - 🖥️ One-command start on Linux (`start.sh`) and Windows (`start.bat`)
+- 🍎 iPhone Shortcut: Instagram → Share → **Add to Reel Queue**, no copying or pasting
 
 ---
 
@@ -75,7 +76,8 @@ already set up and starts in a second or two. Keep the terminal open while you w
 happen, and press **Ctrl+C** to stop. (On Windows, cmd may then ask "Terminate batch job (Y/N)?":
 either answer is fine.)
 
-Options: `--port 8081` uses a different port. Change the dashboard password with
+Options: `--port 8081` uses a different port; `--new-shortcut-key` / `--revoke-shortcut-key`
+manage the iPhone Shortcut key (see below). Change the dashboard password with
 `.venv/bin/python server.py --set-password` (Windows: `.venv\Scripts\python server.py --set-password`).
 
 ---
@@ -100,6 +102,54 @@ Options: `--port 8081` uses a different port. Change the dashboard password with
 - **Description:** the rest of the caption, then `Originally posted by @username on Instagram`
   with the original link, then `#Shorts`.
 - A reel with no caption gets the title `Instagram Reel by @username`.
+
+---
+
+## 🍎 iPhone: share reels straight from Instagram
+
+An iOS Shortcut called **Add to Reel Queue** appears in Instagram's Share menu and sends the
+reel to your PC. It's added to the end of the queue exactly like **Add to queue** on the
+dashboard: it never starts an upload by itself.
+
+**1. Create the Shortcut key on the PC** (the dashboard can keep running):
+
+```bash
+./start.sh --new-shortcut-key          # Windows: start.bat --new-shortcut-key
+```
+
+It prints the key once, with a QR code containing only the key, plus the URL to use. Scan the
+QR with the iPhone camera to copy the key (or type it: case and dashes don't matter), then
+clear the terminal. Running it again replaces the key and the old one stops working at once.
+Turn the Shortcut off with `--revoke-shortcut-key`.
+
+**2. Build the Shortcut** in Apple's Shortcuts app (name: *Add to Reel Queue*):
+
+- Shortcut details: **Show in Share Sheet** on; it receives **URLs** and **Text**.
+- **Match Text** `(https?://)?(www\.|m\.)?instagram\.com/\S+` in *Shortcut Input*.
+  If there's no match: **Show Notification** "No Instagram reel link found" and **Stop**.
+- **Get Contents of URL** `http://<PC address>:8080/api/shortcut/add`, method **POST**,
+  header `Authorization` = `Bearer <your key>`, request body **JSON** with a text field `url`
+  set to the first match.
+- **Get Dictionary Value** `message` from the result and **Show Notification** with it.
+
+The server replies with JSON: `status` is `added`, `duplicate`, `invalid`, `unauthorized`,
+`not_configured`, `locked`, `forbidden` or `error`, and `message` is a sentence ready to show.
+
+**How the key is protected**
+
+- Only a SHA-256 hash of the key is stored (in `queue.db`); the key itself is shown once and
+  never appears in the dashboard, logs or replies. It can't be printed into a file or pipe.
+- The key works only for `POST /api/shortcut/add` (adding a reel). It can't log in, see the
+  queue, remove or upload anything, or change settings. The dashboard login doesn't work on
+  that address either.
+- Five wrong keys from one device lock that device out for five minutes.
+- **Plain HTTP:** the key travels unencrypted on your Wi-Fi, just like the dashboard password
+  does. Someone already on your network could capture it and add reels to your queue (which
+  would then be uploaded publicly). Only use this on a Wi-Fi you trust, keep guests on a
+  separate guest network, check the queue now and then, and make a new key if in doubt.
+  Nothing is exposed to the internet.
+- Give the PC a fixed address (a DHCP reservation in your router), so the Shortcut's URL keeps
+  working.
 
 ---
 
