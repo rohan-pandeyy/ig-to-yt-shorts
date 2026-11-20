@@ -41,6 +41,15 @@
         <button type="submit" class="primary">Add to queue</button>
       </form>
       <ul id="add-results" class="add-results"></ul>
+
+      <div class="divider" role="separator"><span>or</span></div>
+
+      <button type="button" id="paste-btn" class="paste-btn">Paste link from clipboard</button>
+      <div id="paste-fallback" class="paste-fallback" hidden>
+        <label for="paste-box" class="label">Tap and hold the box, then tap Paste. The link is added right away.</label>
+        <input id="paste-box" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Tap and hold, then Paste">
+      </div>
+      <ul id="paste-results" class="add-results" aria-live="polite"></ul>
     </section>
 
     <section aria-labelledby="queue-h">

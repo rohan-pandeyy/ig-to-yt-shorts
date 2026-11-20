@@ -273,6 +273,78 @@ $('add-form').addEventListener('submit', async (ev) => {
   }
 });
 
+// ---------- paste from clipboard ----------
+
+const MAX_PASTE_RESULTS = 5;
+
+function instagramLinks(text) {
+  return (text.match(/https?:\/\/\S+/gi) || []).filter((u) => /^https?:\/\/([a-z0-9-]+\.)*instagram\.com\//i.test(u));
+}
+
+function showPasteResult(ok, text) {
+  const list = $('paste-results');
+  list.prepend(h('li', { class: ok ? 'ok' : 'bad' }, text));
+  while (list.children.length > MAX_PASTE_RESULTS) list.lastChild.remove();
+}
+
+async function addPasted(text) {
+  const links = instagramLinks(text || '');
+  if (!links.length) {
+    showPasteResult(false, text && text.trim()
+      ? "The copied text isn't an Instagram link. Copy the reel's link and try again."
+      : 'Nothing is copied. Copy a reel link first.');
+    return;
+  }
+  const { results } = await api('POST', '/api/reels', { urls: links });
+  for (const r of results) showPasteResult(r.ok, r.ok ? `Added: ${r.url}` : r.error);
+  if (results.some((r) => r.ok)) await refresh();
+}
+
+function showPasteFallback() {
+  $('paste-fallback').hidden = false;
+  $('paste-box').focus();
+}
+
+$('paste-btn').addEventListener('click', async () => {
+  // Reading the clipboard directly needs HTTPS or localhost; over the Wi-Fi address
+  // (http://192.168...) browsers don't allow it, so fall back to a paste box.
+  if (!(window.isSecureContext && navigator.clipboard && navigator.clipboard.readText)) {
+    showPasteFallback();
+    return;
+  }
+  const button = $('paste-btn');
+  let text;
+  try {
+    text = await navigator.clipboard.readText();
+  } catch (e) {
+    showPasteFallback();              // permission denied or not supported
+    return;
+  }
+  button.disabled = true;
+  try {
+    await addPasted(text);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('paste-box').addEventListener('paste', async (ev) => {
+  ev.preventDefault();
+  const text = (ev.clipboardData || window.clipboardData).getData('text');
+  const box = ev.target;
+  box.disabled = true;
+  try {
+    await addPasted(text);
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    box.value = '';
+    box.disabled = false;
+  }
+});
+
 // ---------- interval ----------
 
 $('interval').addEventListener('change', async (ev) => {
