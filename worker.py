@@ -26,7 +26,6 @@ Run `python worker.py --help` for a small CLI to test the worker without the das
 """
 
 import argparse
-import fcntl
 import logging
 import os
 import sys
@@ -36,6 +35,11 @@ from zoneinfo import ZoneInfo
 
 import ig_to_yt_shorts as yt
 import store
+
+if os.name == 'nt':
+    import msvcrt
+else:
+    import fcntl
 
 log = logging.getLogger('worker')
 
@@ -153,7 +157,8 @@ class Worker:
             store.set_setting('next_scheduled_at', _fmt(first))
 
     def start(self, background=True):
-        self._acquire_lock()
+        if self._lock_file is None:
+            self.acquire_lock()
         self.prepare()
         log.info("Worker started. Next scheduled run: %s", store.get_setting('next_scheduled_at'))
         if background:
@@ -175,15 +180,24 @@ class Worker:
         """Call after Upload Now, adding reels or changing the interval, to skip the poll wait."""
         self._wake.set()
 
-    def _acquire_lock(self):
-        # One worker per machine; a second one would double the schedule.
-        self._lock_file = open(self.lock_path, 'w')
+    def acquire_lock(self):
+        """Claim the one-worker-per-machine lock; a second worker would double the schedule.
+
+        Raises RuntimeError if the dashboard (or worker.py run) is already running.
+        The OS releases the lock automatically if the process dies.
+        """
+        self._lock_file = open(self.lock_path, 'a+')
         try:
-            fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
+            if os.name == 'nt':
+                self._lock_file.seek(0)
+                msvcrt.locking(self._lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
             self._lock_file.close()
             self._lock_file = None
-            raise RuntimeError("Another worker is already running (dashboard or worker.py run)")
+            raise RuntimeError("The dashboard is already running on this PC "
+                               "(or worker.py run is). Use the one that's open, or stop it first.")
 
     def _loop(self):
         while not self._stop.is_set():

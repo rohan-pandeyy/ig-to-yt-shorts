@@ -1,113 +1,150 @@
 # 📲 Instagram Reel to YouTube Shorts Uploader
 
-This Python script automates downloading an Instagram Reel and uploading it to YouTube Shorts, including extracting the title and hashtags for your video.
+Queue Instagram Reels from your phone and let your PC upload them to your YouTube channel as
+Shorts, one at a time on a schedule you choose. Everything runs on your own computer.
 
 ---
 
 ## 🚀 Features
 
-- 🔗 Accepts Instagram Reel URL (via command-line or prompt)
-- 🧠 Auto-extracts title and hashtags from the Instagram description
-- 📼 Downloads highest quality video using `yt-dlp`
-- ⬆️ Uploads directly to your YouTube Shorts account via YouTube Data API v3
-- 🔒 Secure Google OAuth authentication (local token storage)
-- 🛠️ Automatically downloads and manages `ffmpeg` if not present
-- 🗂️ Stores downloaded videos in a local `temp` folder (not auto-deleted)
+- 📱 Mobile-friendly dashboard on your Wi-Fi, opened by scanning a QR code in the terminal
+- 🗓️ Upload queue: one reel per interval (default: every hour), oldest first
+- ⚡ **Upload now** for a single reel, optionally with a custom title, without changing the schedule
+- 🧠 Uses the Instagram caption as the YouTube title; longer captions continue in the description,
+  with credit to the original creator
+- 🛡️ Never uploads the same reel twice; failed reels stay visible with a Retry button
+- 🔒 Password-protected dashboard; Google sign-in and all files stay on your PC
+- 🖥️ One-command start on Linux (`start.sh`) and Windows (`start.bat`)
 
 ---
 
 ## 🛠️ Prerequisites
 
-- Python 3.7+
-- [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-- [ffmpeg](https://ffmpeg.org/) (auto-downloaded if missing)
-- Google Cloud project with YouTube Data API v3 enabled
-- `client_secrets.json` (OAuth 2.0 credentials from Google)
+- **Python 3.11 or newer**
+- **FFmpeg** (the start script tells you how to install it if it's missing)
+- A Google Cloud project with the **YouTube Data API v3** and a `client_secrets.json` (below)
 
 ---
 
-## ⚡ Installation
+## 🔑 Google API Setup (once)
 
-1. **Clone the repo:**
+1. Go to the [Google Cloud Console](https://console.cloud.google.com/) and create a project.
+2. **APIs & Services → Library**: enable **YouTube Data API v3**.
+3. **Google Auth Platform**: fill in the app name and your email, choose **External**, then under
+   **Audience → Test users** add the Google account that owns your YouTube channel.
+4. **Clients → Create client → Desktop app**, then download the JSON file.
+5. Save it in the project folder as **`client_secrets.json`**.
+
+---
+
+## ⚡ Quick start
+
+### Linux
 
 ```bash
 git clone https://github.com/k69883/ig-to-yt-shorts.git
 cd ig-to-yt-shorts
+./start.sh
 ```
 
-2. **Install dependencies:**
+### Windows
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+```bat
+git clone https://github.com/k69883/ig-to-yt-shorts.git
+cd ig-to-yt-shorts
+start.bat
 ```
+
+(You can also double-click `start.bat` in File Explorer.)
+
+### First run
+
+The start script walks you through everything that's missing:
+
+1. Creates the `.venv` virtual environment and installs the Python packages.
+2. Checks for FFmpeg and `client_secrets.json`, and explains how to fix anything missing.
+3. Asks you to choose a **dashboard password** (you'll type it on your phone).
+4. Offers to **sign in to YouTube**: a browser window opens; pick the account you added as a
+   test user. "Google hasn't verified this app" is expected for a personal app: click **Continue**.
+5. Starts the dashboard and prints its address with a **QR code**. Scan it with your phone.
+
+### Every time after that
+
+Run the same command: `./start.sh` (Linux) or `start.bat` (Windows). It skips everything that's
+already set up and starts in a second or two. Keep the terminal open while you want uploads to
+happen, and press **Ctrl+C** to stop. (On Windows, cmd may then ask "Terminate batch job (Y/N)?":
+either answer is fine.)
+
+Options: `--port 8081` uses a different port. Change the dashboard password with
+`.venv/bin/python server.py --set-password` (Windows: `.venv\Scripts\python server.py --set-password`).
 
 ---
 
-## 🔑 Google API Setup
+## 📱 Using the dashboard
 
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project (or use an existing one)
-3. Enable the **YouTube Data API v3**
-4. Create OAuth 2.0 credentials (Desktop app)
-5. Download the `client_secrets.json` file and place it in the project directory
+- **Add reels:** paste one or more Instagram reel links (one per line).
+- **Schedule:** the PC uploads the oldest waiting reel once per interval. If the PC was asleep it
+  does one upload when it wakes, then continues normally, without catching up on missed slots.
+- **Upload now:** uploads that reel as soon as the current upload (if any) finishes. You can type a
+  custom title (up to 100 characters); leave it empty to use the caption.
+- **Needs attention:** failed reels keep their place and can be retried. A reel that was cut off
+  mid-upload shows **Check channel**: look on YouTube, then tap "It's on YouTube" or "Not there, retry".
+- **Paused:** if YouTube's daily upload quota runs out, uploads resume after it resets. If the
+  YouTube sign-in expires (every 7 days while the Google app is in "Testing" mode), restart the
+  start script and choose to sign in, or run `.venv/bin/python ig_to_yt_shorts.py --auth`.
 
----
+### Titles and descriptions
 
-## 🚦 Usage
-
-### Command-line
-
-```bash
-python ig_to_yt_shorts.py --url <INSTAGRAM_REEL_URL>
-```
-
-### Interactive
-
-```bash
-python ig_to_yt_shorts.py
-# Then enter the Instagram Reel URL when prompted
-```
-
-- The script will:
-  - Check for `ffmpeg` (downloads if missing)
-  - Extract the title and hashtags from the Instagram Reel
-  - Download the video to the `temp` folder
-  - Authenticate with YouTube (browser window will open on first run)
-  - Upload the video as a YouTube Short
-  - Print the YouTube Shorts URL on success
+- **Title:** the Instagram caption. Captions longer than 100 characters are cut between words
+  with `...`, and the rest continues at the top of the description, so nothing is lost.
+- **Description:** the rest of the caption, then `Originally posted by @username on Instagram`
+  with the original link, then `#Shorts`.
+- A reel with no caption gets the title `Instagram Reel by @username`.
 
 ---
 
-## 📱 Dashboard (queue + scheduled uploads)
+## 🧰 Troubleshooting
 
-A small web dashboard you can open from your phone on the same Wi-Fi. Paste reel links into a
-queue; the PC uploads one reel per interval (default: every hour), oldest first. **Upload now**
-skips the wait for one reel, optionally with a custom title, without changing the schedule.
+**The phone can't open the dashboard**
+
+- The phone must be on the **same Wi-Fi** as the PC (not mobile data, not a guest network:
+  guest networks often block devices from reaching each other).
+- **Windows:** the first time, Windows asks whether Python may use the network. Allow it on
+  **Private networks**, and make sure your Wi-Fi is set as a *Private* network in Windows settings.
+- **Linux with firewalld (Fedora):** the default *FedoraWorkstation* zone already allows the
+  dashboard. If you use another zone: `sudo firewall-cmd --add-port=8080/tcp --permanent && sudo firewall-cmd --reload`
+- If the start script lists several network addresses (Wi-Fi + Ethernet, VPN), try the others.
+
+**"The dashboard is already running"**: another terminal is already running it. Use that one,
+or stop it with Ctrl+C first.
+
+**"Port 8080 is already in use"**: start on another port: `./start.sh --port 8081`.
+
+---
+
+## 🖥️ Command-line upload (single reel, no dashboard)
 
 ```bash
-.venv/bin/python ig_to_yt_shorts.py --auth     # once: sign in to YouTube (browser opens)
-.venv/bin/python server.py --set-password      # once: dashboard password (8+ characters)
-.venv/bin/python server.py                     # prints the address to open on your phone
+.venv/bin/python ig_to_yt_shorts.py --url <INSTAGRAM_REEL_URL>
+.venv/bin/python ig_to_yt_shorts.py --url <URL> --dry-run          # download and preview only
+.venv/bin/python ig_to_yt_shorts.py --url <URL> --title "My title"  # custom title
 ```
 
-- Everything runs on this PC. Only the dashboard page is reachable on the network, behind the password.
-- The queue lives in `queue.db`. Reels that were interrupted mid-upload show as **Check channel**
-  instead of being retried, so nothing is uploaded twice.
-- If YouTube's daily quota runs out or the sign-in expires, the queue pauses and the dashboard
-  says why. For an expired sign-in, run the `--auth` command above again.
-- `worker.py` has a small CLI (`add`, `list`, `now`, `run`, …) for using the queue without the dashboard.
-- Tests: `.venv/bin/python -m unittest discover -s tests`
+On Windows use `.venv\Scripts\python` instead of `.venv/bin/python`.
+
+`worker.py` also has a small CLI (`add`, `list`, `now`, `run`, …) for the queue without the dashboard.
 
 ---
 
 ## 📝 Notes
 
-- Downloaded videos are saved in the `temp` folder. You can clear this folder manually.
-- Google OAuth tokens are stored locally as `token.pickle` for future runs.
-- Your credentials (`client_secrets.json`, `token.pickle`) are never uploaded or shared.
-- If the script cannot extract a title, you will be prompted to enter one.
+- Downloaded videos are kept in the `temp` folder; you can clear it manually.
+- Local data: `queue.db` (queue, settings, password hash), `token.pickle` (YouTube sign-in) and
+  `client_secrets.json`. They are git-ignored and never shared or overwritten by the start scripts.
+- Uploads from a new, unverified Google Cloud project may be locked to private by YouTube until the
+  project passes YouTube's API audit.
+- Only upload reels you own or have permission to re-post.
+- Tests: `.venv/bin/python -m unittest discover -s tests`
 
 ---
 
@@ -120,6 +157,3 @@ MIT License
 ## 🙋‍♂️ Author
 
 k69883
-
-git clone https://github.com/k69883/ig-to-yt-shorts.git
-cd ig-to-yt-shorts

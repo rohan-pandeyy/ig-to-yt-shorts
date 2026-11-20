@@ -3,3 +3,5 @@ google-auth
 google-auth-oauthlib
 google-api-python-client
 flask
+qrcode
+tzdata; sys_platform == "win32"

@@ -3,8 +3,12 @@ server.py
 ---------
 The dashboard: a Flask app and the background upload worker in one process.
 
-    .venv/bin/python server.py --set-password   # once, on the PC
-    .venv/bin/python server.py                  # then open http://<this PC's IP>:8080
+    ./start.sh      (Linux)      start.bat      (Windows)
+
+The start scripts set up the virtual environment and packages, then run this file, which
+checks FFmpeg and credentials, asks for a dashboard password and YouTube sign-in on first
+run, upgrades the database if needed, starts the worker and the web server, and prints the
+local/network URLs with a QR code for your phone.
 
 Security
 - Every page and API call needs a login (password hash + random session key stored in
@@ -20,7 +24,6 @@ import logging
 import os
 import re
 import secrets
-import socket
 import sys
 import time
 from datetime import datetime, timedelta, timezone
@@ -29,8 +32,10 @@ from urllib.parse import urlparse
 from flask import (Flask, jsonify, redirect, render_template, request, send_file,
                    send_from_directory, session, url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.serving import make_server
 
 import ig_to_yt_shorts as yt
+import startup
 import store
 import worker as worker_mod
 
@@ -227,58 +232,131 @@ def create_app(the_worker):
     return app
 
 
-def lan_ip():
-    """This PC's LAN address (no packets are sent)."""
+def prompt_new_password():
+    """Ask for a new dashboard password twice. Returns it, or None after 3 failed tries."""
+    for _ in range(3):
+        first = getpass.getpass(f"New dashboard password ({MIN_PASSWORD_LEN}+ characters): ")
+        if len(first) < MIN_PASSWORD_LEN:
+            print(f"Too short: use at least {MIN_PASSWORD_LEN} characters.")
+            continue
+        if first == getpass.getpass("Repeat password: "):
+            return first
+        print("Passwords didn't match.")
+    return None
+
+
+def _ask_yes(question):
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(('10.255.255.255', 1))
-            return s.getsockname()[0]
-    except OSError:
-        return None
+        return input(f"{question} [Y/n] ").strip().lower() in ('', 'y', 'yes')
+    except EOFError:
+        return False
+
+
+def first_run_setup(interactive, host, port):
+    """Startup checks and first-time configuration. Returns False if the app can't start."""
+    problems = startup.check_versions()
+    if not startup.port_available(host, port):
+        problems.append(f"Port {port} is already in use by another program. Start on another port:\n"
+                        f"    start.sh --port {port + 1}      (Windows: start.bat --port {port + 1})")
+    if not startup.find_ffmpeg(yt.FFMPEG_EXE):
+        problems.append(startup.ffmpeg_instructions())
+    secrets_problem = startup.check_client_secrets(yt.CLIENT_SECRETS_FILE)
+    if secrets_problem:
+        problems.append(secrets_problem)
+    if problems:
+        print("\nCan't start yet:\n")
+        for p in problems:
+            print(f"- {p}\n")
+        return False
+
+    store.init_db()   # creates queue.db or adds new columns to an existing one; keeps all data
+
+    if not store.get_setting('password_hash'):
+        if not interactive:
+            print("No dashboard password set. Run the start script in a terminal to set one.")
+            return False
+        print("\nFirst run: choose a password for the dashboard (you'll type it on your phone).")
+        password = prompt_new_password()
+        if not password:
+            return False
+        set_password(password)
+        print("Password saved.\n")
+
+    try:
+        yt.get_authenticated_service(interactive=False)
+    except yt.AuthRequired:
+        print("\nYouTube isn't signed in yet (or the sign-in expired).")
+        if interactive and _ask_yes("Sign in now? A browser window will open."):
+            yt.get_authenticated_service(interactive=True)
+            print("YouTube sign-in saved.\n")
+        else:
+            print("Starting anyway. Uploads stay paused until you sign in "
+                  "(run the start script again, or: python ig_to_yt_shorts.py --auth).\n")
+    except Exception as e:   # e.g. no internet right now; the worker retries later
+        print(f"\nWarning: couldn't check the YouTube sign-in ({e}). Starting anyway.\n")
+    return True
 
 
 def main():
-    p = argparse.ArgumentParser(description="Reel queue dashboard")
+    p = argparse.ArgumentParser(description="Reel queue dashboard (web page + upload worker)")
     p.add_argument('--host', default='0.0.0.0',
                    help='Address to listen on (default: all, so phones on the LAN can connect)')
     p.add_argument('--port', type=int, default=DEFAULT_PORT)
     p.add_argument('--set-password', action='store_true', help='Set the dashboard password and exit')
     args = p.parse_args()
-
-    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
-    logging.getLogger('werkzeug').setLevel(logging.WARNING)   # hide per-request poll logs
+    try:
+        sys.stdout.reconfigure(line_buffering=True)   # keep messages in order when piped/logged
+    except (AttributeError, ValueError):
+        pass
 
     if args.set_password:
-        first = getpass.getpass("New dashboard password: ")
-        if first != getpass.getpass("Repeat password: "):
-            sys.exit("Passwords didn't match.")
-        try:
-            set_password(first)
-        except ValueError as e:
-            sys.exit(str(e))
+        store.init_db()
+        password = prompt_new_password()
+        if not password:
+            sys.exit(1)
+        set_password(password)
         print("Password saved. Existing logins were signed out.")
         return
 
-    store.init_db()
-    if not store.get_setting('password_hash'):
-        sys.exit("Set a dashboard password first:  .venv/bin/python server.py --set-password")
-
+    # 1. Only one dashboard per PC: check before asking any setup questions.
     w = worker_mod.Worker()
     try:
-        w.start()
+        w.acquire_lock()
     except RuntimeError as e:
         sys.exit(str(e))
-    app = create_app(w)
 
-    ip = lan_ip()
-    print(f"\nDashboard on this PC:  http://127.0.0.1:{args.port}")
-    if args.host == '0.0.0.0' and ip:
-        print(f"From your phone:       http://{ip}:{args.port}")
-    print("Press Ctrl+C to stop.\n")
     try:
-        app.run(host=args.host, port=args.port, threaded=True, debug=False, use_reloader=False)
+        # 2. Checks and first-time setup (password, YouTube sign-in, database migration).
+        if not first_run_setup(sys.stdin.isatty(), args.host, args.port):
+            sys.exit(1)
+
+        logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(name)s: %(message)s')
+        logging.getLogger('werkzeug').setLevel(logging.WARNING)   # hide the page's 5-second polls
+
+        # 3. Claim the port before starting uploads, so a busy port fails cleanly.
+        app = create_app(w)
+        try:
+            httpd = make_server(args.host, args.port, app, threaded=True)
+        except (OSError, SystemExit):   # werkzeug exits by itself on "address in use"
+            sys.exit(f"Can't listen on port {args.port}. Start on another port: --port {args.port + 1}")
+
+        # 4. Start the worker, then print the banner exactly once.
+        w.start()
+        local, network, others, warnings = startup.dashboard_urls(args.host, args.port)
+        print(startup.banner(local, network, others, warnings, startup.qr_mode()), flush=True)
+        try:
+            httpd.serve_forever()      # returns on Ctrl+C (werkzeug handles the interrupt itself)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            httpd.server_close()
+        print("\nStopping...")
+        if w.current_reel_id is not None:
+            print("A reel was being processed. If its upload had started it will show as "
+                  "'Check channel' next time; otherwise it simply goes back to the queue.")
     finally:
         w.stop()
+    print("Stopped.")
 
 
 if __name__ == '__main__':
